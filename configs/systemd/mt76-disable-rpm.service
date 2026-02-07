@@ -1,0 +1,13 @@
+[Unit]
+Description=Disable mt76 driver internal runtime PM
+After=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/bin/sleep 3
+ExecStart=/bin/bash -c 'for f in /sys/kernel/debug/ieee80211/phy*/mt76/runtime-pm; do echo 0 > "$f" 2>/dev/null; done'
+
+[Install]
+WantedBy=multi-user.target
