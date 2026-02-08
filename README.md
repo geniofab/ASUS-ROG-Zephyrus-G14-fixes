@@ -1,8 +1,7 @@
-# System Fixes — NB014-L (ASUS ROG Laptop)
+# System Fixes — ASUS ROG Zephyrus G14 2025
 
-**Date:** February 7, 2026
-**System:** Ubuntu 24.04 (noble), kernel 6.17.0-14-generic
-**Hardware:** ASUS ROG Zephyrus G14 2025 (GA403WR / NB014-L)
+**Tested on:** Ubuntu 24.04 (noble), kernel 6.17.x
+**Hardware:** ASUS ROG Zephyrus G14 2025 (GA403WR)
 - **GPU:** AMD iGPU + NVIDIA GeForce RTX 5070 Ti Laptop (hybrid/Optimus)
 - **Audio:** Realtek ALC285 HDA codec + 2× Cirrus Logic CS35L56 Rev B0 amplifiers (subsystem ID `10431024`)
 - **WiFi:** MediaTek MT7925 (PCIe), driver `mt7925e`
@@ -13,12 +12,11 @@
 ## 1. NVIDIA Freeze Fix
 
 ### Problem
-The Ubuntu session froze during suspend/resume. Investigation of `journalctl` logs (boot -2, 17:48–18:42) revealed:
+The Ubuntu session froze during suspend/resume:
 - NVIDIA 590.48.01 **open kernel module** failed suspend/resume
-- `pm_runtime_work` hogged CPU for >13333µs (5 occurrences)
+- `pm_runtime_work` hogged CPU
 - NVIDIA HDA controller kept re-enabling in a loop
 - GNOME Shell compositor couldn't allocate/render windows
-- Firefox was blocked from GPU access via AppArmor NVIDIA device denials
 
 ### Root Cause
 The `nvidia-driver-590-open` (open-source kernel module) has bugs in power state transitions on this hardware.
@@ -104,35 +102,68 @@ options mt7925e disable_aspm=Y
 - Takes effect on module load (reboot or `modprobe -r mt7925e && modprobe mt7925e`)
 - Verify: `cat /sys/module/mt7925e/parameters/disable_aspm` → `Y`
 
-### Fix 3: Disable mt76 Internal Runtime PM
-**File:** `/etc/systemd/system/mt76-disable-rpm.service`
-```ini
-[Unit]
-Description=Disable mt76 driver internal runtime PM
-After=network-pre.target
-Wants=network-pre.target
+### Fix 3: Disable mt76 Internal Runtime PM (DKMS patched driver)
 
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStartPre=/bin/sleep 3
-ExecStart=/bin/bash -c 'for f in /sys/kernel/debug/ieee80211/phy*/mt76/runtime-pm; do echo 0 > "$f" 2>/dev/null; done'
+The upstream mt76 driver hardcodes `pm.enable_user = true` and `pm.ds_enable_user = true` at init time, and the **only** interface to change these is via debugfs. With Secure Boot enabled (kernel lockdown = `integrity`), debugfs writes are blocked — so the original systemd service approach cannot work.
 
-[Install]
-WantedBy=multi-user.target
+**Solution:** Build a patched mt76 driver stack via DKMS, signed with the existing MOK key (same one NVIDIA uses). The patch changes the defaults to `false` in `mt7925/init.c`, eliminating the need for debugfs writes entirely.
+
+```bash
+sudo bash configs/mt76-pm-fix/setup.sh
+# Reboot required
 ```
-- Enabled with: `sudo systemctl enable mt76-disable-rpm.service`
-- Writes `0` to `/sys/kernel/debug/ieee80211/phy*/mt76/runtime-pm` on every boot
-- Verify: `sudo cat /sys/kernel/debug/ieee80211/phy1/mt76/runtime-pm` → `0`
+
+The script:
+1. Downloads mt76 source from kernel v6.17 (matching the running kernel)
+2. Patches `mt7925_register_device()` to default `pm.enable_user = false` and `pm.ds_enable_user = false`
+3. Builds all 5 mt76 modules (mt76, mt76-connac-lib, mt792x-lib, mt7925-common, mt7925e)
+4. Signs them with the existing MOK key (DKMS auto-signs on Ubuntu)
+5. Installs via DKMS to `/lib/modules/.../updates/dkms/` (takes priority over stock modules)
+6. Disables the old systemd workaround services
+
+**DKMS auto-rebuilds** on kernel updates, so the fix persists across upgrades.
+
+- Verify: `sudo cat /sys/kernel/debug/ieee80211/phy*/mt76/runtime-pm` → `0`
+- Verify: `sudo cat /sys/kernel/debug/ieee80211/phy*/mt76/deep-sleep` → `0`
+- Verify: `modinfo mt7925-common | grep signer` → should show your MOK key name
+- Remove: `sudo dkms remove mt76-pm-fix/1.0 --all`
+
+> **Note:** The PHY number (phy0, phy1) varies between boots. Always use the wildcard `phy*` in paths.
 
 ### Files Changed
 - **Created:** `configs/NetworkManager/wifi-powersave-off.conf` → install to `/etc/NetworkManager/conf.d/`
 - **Created:** `configs/modprobe/mt7925-fix.conf` → install to `/etc/modprobe.d/`
-- **Created:** `configs/systemd/mt76-disable-rpm.service` → install to `/etc/systemd/system/`
+- **Created:** `configs/mt76-pm-fix/setup.sh` → run with `sudo bash` to build and install patched DKMS modules
 - **Removed:** `/etc/NetworkManager/conf.d/default-wifi-powersave-on.conf` (had `wifi.powersave = 3`, conflicted with `wifi-powersave-off.conf`)
 
 ### Note
 If a `default-wifi-powersave-on.conf` file exists in `/etc/NetworkManager/conf.d/`, remove it — it overrides the power-save-off config since NetworkManager merges all `.conf` files alphabetically and `default-*` sorts before `wifi-*`.
+
+### Secure Boot Compatibility
+Fix 3 requires building out-of-tree kernel modules. With Secure Boot enabled, these must be signed with a Machine Owner Key (MOK). The setup script uses the existing MOK key at `/var/lib/shim-signed/mok/` (created during NVIDIA DKMS setup). **No Secure Boot changes are needed** — BitLocker and Windows Hello remain fully functional.
+
+### Kernel Updates & Removal
+DKMS automatically rebuilds and signs the patched modules whenever a new kernel is installed. No manual intervention is needed.
+
+If a future kernel ships with a fixed mt76 driver (e.g., runtime PM disabled by default or a proper module parameter), the DKMS module will still override it. To test whether the stock driver has been fixed:
+
+```bash
+# Temporarily remove the DKMS override for the current kernel
+sudo dkms uninstall mt76-pm-fix/1.0 -k $(uname -r)
+sudo reboot
+
+# After reboot, check if stock driver still has the issue
+sudo cat /sys/kernel/debug/ieee80211/phy*/mt76/runtime-pm
+# If 0 → upstream fixed it, remove DKMS entirely:
+#   sudo dkms remove mt76-pm-fix/1.0 --all
+# If 1 → still broken, re-enable:
+#   sudo dkms install mt76-pm-fix/1.0 -k $(uname -r) && sudo reboot
+```
+
+To remove the fix permanently:
+```bash
+sudo dkms remove mt76-pm-fix/1.0 --all
+```
 
 ---
 
@@ -250,10 +281,8 @@ sudo systemctl restart NetworkManager
 # --- WiFi: ASPM disable for MT7925 ---
 sudo cp configs/modprobe/mt7925-fix.conf /etc/modprobe.d/
 
-# --- WiFi: mt76 internal runtime PM disable ---
-sudo cp configs/systemd/mt76-disable-rpm.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable mt76-disable-rpm.service
+# --- WiFi: mt76 internal runtime PM disable (DKMS patched driver) ---
+sudo bash configs/mt76-pm-fix/setup.sh
 
 # --- GRUB: dual-boot with visible menu ---
 sudo cp configs/grub/grub /etc/default/grub
@@ -275,17 +304,23 @@ amixer -c 0 sget Master
 amixer -c 0 sget PCM
 
 # --- WiFi ---
-# Check WiFi power save
+# Check WiFi power save (interface name may vary)
 iw dev wlp99s0 get power_save
 
 # Check ASPM status  
 cat /sys/module/mt7925e/parameters/disable_aspm
 
-# Check mt76 internal runtime PM
-sudo cat /sys/kernel/debug/ieee80211/phy1/mt76/runtime-pm
+# Check mt76 internal runtime PM (phy number varies between boots, use phy*)
+sudo cat /sys/kernel/debug/ieee80211/phy*/mt76/runtime-pm
+
+# Check mt76 deep sleep
+sudo cat /sys/kernel/debug/ieee80211/phy*/mt76/deep-sleep
 
 # Check mt76 PM stats
-sudo cat /sys/kernel/debug/ieee80211/phy1/mt76/runtime_pm_stats
+sudo cat /sys/kernel/debug/ieee80211/phy*/mt76/pm_stats
+
+# Check DKMS module is signed and loaded
+modinfo mt7925-common | grep signer
 
 # Check PCI runtime PM
 cat /sys/bus/pci/devices/0000:63:00.0/power/control
