@@ -9,28 +9,46 @@
 
 ---
 
-## 1. NVIDIA Freeze Fix
+## 1. NVIDIA Driver Fix
 
 ### Problem
-The Ubuntu session froze during suspend/resume:
-- NVIDIA 590.48.01 **open kernel module** failed suspend/resume
-- `pm_runtime_work` hogged CPU
-- NVIDIA HDA controller kept re-enabling in a loop
-- GNOME Shell compositor couldn't allocate/render windows
+Two issues with the NVIDIA driver on this hardware:
+
+1. **590-open crashed on suspend/resume:** `nvidia-driver-590-open` (590.48.01) caused session freezes — `pm_runtime_work` hogged CPU, the NVIDIA HDA controller re-enabled in a loop, and GNOME Shell couldn't allocate/render windows.
+2. **590 closed can't init the GPU:** `nvidia-driver-590` (proprietary closed module) refuses to initialize the RTX 5070 Ti entirely (`RmInitAdapter failed`), retrying ~12 times over 45 seconds before giving up. Blackwell GPUs (RTX 50-series) **require** the open kernel module — the closed module does not support them.
 
 ### Root Cause
-The `nvidia-driver-590-open` (open-source kernel module) has bugs in power state transitions on this hardware.
+The `nvidia-driver-590-open` new feature branch (590.48.01) has bugs in power state transitions. The `nvidia-driver-590` closed module does not support Blackwell GPUs at all. Both drivers are broken for this hardware on the 590 branch.
 
 ### Fix
-Switched from `nvidia-driver-590-open` to `nvidia-driver-590` (proprietary closed kernel module):
+Switched to `nvidia-driver-570-open` — the **production branch** (570.211.01), which has had multiple bug-fix releases and stable open-kernel-module support for Blackwell:
 ```bash
-sudo apt install nvidia-driver-590
-# (replaces nvidia-driver-590-open)
-# Reboot required
+sudo apt purge nvidia* libnvidia*
+sudo apt autoremove
+sudo add-apt-repository ppa:graphics-drivers/ppa
+sudo apt update
+sudo apt install nvidia-driver-570-open
+sudo reboot
+```
+
+Also added kernel parameters for proper DRM modesetting and nouveau blacklisting:
+```diff
+-GRUB_CMDLINE_LINUX_DEFAULT="quiet splash"
++GRUB_CMDLINE_LINUX_DEFAULT="quiet splash nvidia-drm.modeset=1 nouveau.modeset=0"
+```
+Applied with `sudo update-grub`.
+
+### Verification
+```bash
+nvidia-smi
+# Should show: Driver Version: 570.211.01, NVIDIA GeForce RTX 5070 Ti Laptop GPU
 ```
 
 ### Files Changed
-- None (package swap via apt)
+- **Modified:** `configs/grub/grub` → added `nvidia-drm.modeset=1 nouveau.modeset=0` to kernel parameters
+
+### Note
+The RTX 5070 Ti (Blackwell, PCI ID `10de:2f58`) only works with the **open** kernel module variant. The proprietary closed module will never initialize this GPU, regardless of driver version. The 570 production branch (570.211.01) is more stable than the 590 new feature branch (590.48.01) for suspend/resume on this hardware.
 
 ---
 
@@ -295,6 +313,13 @@ amixer -c 0 sset PCM 200
 To re-apply all fixes on a fresh install:
 
 ```bash
+# --- NVIDIA: install 570-open driver from PPA ---
+sudo apt purge nvidia* libnvidia*
+sudo apt autoremove
+sudo add-apt-repository ppa:graphics-drivers/ppa
+sudo apt update
+sudo apt install nvidia-driver-570-open
+
 # --- Audio: Cirrus CS35L56 amplifier firmware ---
 sudo bash configs/cirrus/cirrus-fix.sh
 
@@ -312,7 +337,7 @@ sudo bash configs/mt76-pm-fix/setup.sh
 # --- WiFi: reload mt7925e on resume from suspend ---
 sudo bash configs/mt76-pm-fix/mt7925-resume-fix.sh
 
-# --- GRUB: dual-boot with visible menu ---
+# --- GRUB: dual-boot menu + NVIDIA kernel parameters ---
 sudo cp configs/grub/grub /etc/default/grub
 sudo update-grub
 
@@ -323,6 +348,13 @@ sudo reboot
 ## Diagnostic Commands
 
 ```bash
+# --- NVIDIA ---
+# Check driver version and GPU status
+nvidia-smi
+
+# Check open kernel module is loaded (should show nvidia_open)
+lsmod | grep nvidia
+
 # --- Audio ---
 # Check Cirrus amplifier firmware loaded
 sudo dmesg | grep cs35l56
