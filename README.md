@@ -165,6 +165,31 @@ To remove the fix permanently:
 sudo dkms remove mt76-pm-fix/1.0 --all
 ```
 
+### Fix 4: Reload mt7925e on Resume from Suspend
+
+Even with Fixes 1–3 active, WiFi stalls recur after resume from s2idle (closing the laptop lid). The PCI subsystem restores ASPM L1 and all L1 substates (L1.1, L1.2 ASPM/PCI-PM) on resume, overriding the driver's `disable_aspm=Y` from probe time. The repeated L1 power-state cycling corrupts the MT7925 firmware's TX path — the connection appears "up" (associated, good signal, no beacon loss) but packets are silently dropped.
+
+Disabling ASPM via sysfs after resume is insufficient because the firmware is already in a bad state. The only reliable fix is a full module reload, which resets the firmware.
+
+```bash
+sudo bash configs/mt76-pm-fix/mt7925-resume-fix.sh
+```
+
+The script installs a systemd system-sleep hook (`/usr/lib/systemd/system-sleep/mt7925-reload.sh`) that:
+1. Detects resume from suspend
+2. Unloads `mt7925e` (resets firmware)
+3. Reloads `mt7925e` (re-probes with ASPM disabled)
+4. Disables ASPM L1 substates via sysfs (belt and suspenders)
+
+WiFi briefly disconnects (~3s) during resume; NetworkManager auto-reconnects.
+
+- Verify: `journalctl -b 0 -t mt7925-reload`
+- Verify: `sudo lspci -s 63:00.0 -vv | grep LnkCtl` → `ASPM Disabled`
+- Remove: `sudo rm /usr/lib/systemd/system-sleep/mt7925-reload.sh`
+
+### Files Changed
+- **Created:** `configs/mt76-pm-fix/mt7925-resume-fix.sh` → run with `sudo bash` to install the resume hook
+
 ---
 
 ## 5. Cirrus CS35L56 Amplifier Firmware Fix
@@ -283,6 +308,9 @@ sudo cp configs/modprobe/mt7925-fix.conf /etc/modprobe.d/
 
 # --- WiFi: mt76 internal runtime PM disable (DKMS patched driver) ---
 sudo bash configs/mt76-pm-fix/setup.sh
+
+# --- WiFi: reload mt7925e on resume from suspend ---
+sudo bash configs/mt76-pm-fix/mt7925-resume-fix.sh
 
 # --- GRUB: dual-boot with visible menu ---
 sudo cp configs/grub/grub /etc/default/grub
