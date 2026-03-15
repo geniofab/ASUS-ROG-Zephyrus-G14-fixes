@@ -1,48 +1,58 @@
-# ASUS ROG Zephyrus G14 (2025) — Current Linux Setup
+# ASUS ROG Zephyrus G14 (2025) Linux Tweaks
 
-Current, cleaned project state for Ubuntu 24.04 on ASUS ROG Zephyrus G14 2025 (GA403WR).
+Practical configuration files and scripts for Ubuntu 24.04 on the ASUS ROG Zephyrus G14 2025 (GA403WR).
 
-## Scope
+## What this repository includes
 
-- **OS:** Ubuntu 24.04 (noble)
-- **Kernel track:** OEM (`linux-oem-24.04b`)
-- **WiFi policy:** **stock in-tree MT7925 driver + stock Ubuntu firmware** (no custom DKMS patches)
-- **Desktop:** GNOME (Wayland)
+- [configs/grub/grub](configs/grub/grub): GRUB defaults for NVIDIA and dual-boot friendly behavior.
+- [configs/cirrus/cirrus-fix.sh](configs/cirrus/cirrus-fix.sh): Creates required Cirrus CS35L56 firmware links.
+- [configs/gnome/vitals-setup.sh](configs/gnome/vitals-setup.sh): Configures GNOME Vitals panel sensors.
+- [configs/NetworkManager/wifi-powersave-off.conf](configs/NetworkManager/wifi-powersave-off.conf): Disables WiFi powersave in NetworkManager.
+- [configs/mt76-pm-fix/revert-to-stock-oem.sh](configs/mt76-pm-fix/revert-to-stock-oem.sh): Resets MT7925 WiFi to stock OEM baseline.
 
----
+## Target setup
 
-## Active Components in This Repo
+- Ubuntu 24.04 (GNOME/Wayland)
+- `linux-oem-24.04b`
+- In-tree `mt7925e` driver
+- Ubuntu `linux-firmware`
 
-- `configs/grub/grub`
-  - GRUB defaults with dual-boot menu and NVIDIA kernel parameters.
-- `configs/cirrus/cirrus-fix.sh`
-  - Installs missing Cirrus CS35L56 firmware links for speaker amplifiers.
-- `configs/gnome/vitals-setup.sh`
-  - Configures GNOME Vitals panel metrics (CPU/GPU/RAM/Battery power).
-- `configs/NetworkManager/wifi-powersave-off.conf`
-  - Disables WiFi powersave in NetworkManager for MT7925 stability.
-- `configs/mt76-pm-fix/revert-to-stock-oem.sh`
-  - One-shot rollback/migration script to stock WiFi + OEM kernel/firmware.
+## Quick setup
 
-Removed from this repo (deprecated custom MT7925 workarounds):
+### 1) Install NVIDIA open driver branch
 
-- `configs/mt76-pm-fix/setup.sh`
-- `configs/mt76-pm-fix/mt7925-resume-fix.sh`
-- `configs/modprobe/mt7925-fix.conf`
+```bash
+sudo apt update
+sudo apt install nvidia-driver-570-open
+```
 
----
+### 2) Apply Cirrus speaker firmware links
 
-## WiFi (Current Policy)
+```bash
+sudo bash configs/cirrus/cirrus-fix.sh
+```
 
-WiFi is intentionally aligned with stock Ubuntu packages, plus one minimal NetworkManager policy:
+### 3) Apply GRUB configuration
 
-- `mt7925e` from in-tree kernel module path (`/lib/modules/.../kernel/...`)
-- Official Ubuntu `linux-firmware`
-- No MT76 DKMS override
-- No custom ASPM/reload hooks
-- NetworkManager WiFi powersave disabled (`wifi.powersave = 2`)
+```bash
+sudo cp configs/grub/grub /etc/default/grub
+sudo update-grub
+```
 
-Apply the NetworkManager policy:
+### 4) Configure GNOME Vitals (run as desktop user)
+
+```bash
+bash configs/gnome/vitals-setup.sh
+```
+
+### 5) Install OEM kernel line and current firmware
+
+```bash
+sudo apt update
+sudo apt install linux-firmware linux-oem-24.04b linux-image-oem-24.04b
+```
+
+### 6) Apply WiFi powersave policy
 
 ```bash
 sudo install -D -m 644 configs/NetworkManager/wifi-powersave-off.conf \
@@ -50,99 +60,47 @@ sudo install -D -m 644 configs/NetworkManager/wifi-powersave-off.conf \
 sudo systemctl restart NetworkManager
 ```
 
-### Verify WiFi is stock
-
-```bash
-dkms status | grep -Ei 'mt76|mt7925' || echo "No custom MT76/MT7925 DKMS modules"
-modinfo mt7925e | grep '^filename:'
-apt-cache policy linux-firmware linux-oem-24.04b
-```
-
-Expected:
-
-- No `mt76-pm-fix` DKMS entries.
-- `mt7925e` path under `/lib/modules/<kernel>/kernel/drivers/net/wireless/mediatek/mt76/mt7925/`.
-
----
-
-## Setup / Re-apply
-
-### 1) NVIDIA (open module branch)
-
-```bash
-sudo apt update
-sudo apt install nvidia-driver-570-open
-```
-
-### 2) Cirrus speaker firmware links
-
-```bash
-sudo bash configs/cirrus/cirrus-fix.sh
-```
-
-### 3) GRUB configuration
-
-```bash
-sudo cp configs/grub/grub /etc/default/grub
-sudo update-grub
-```
-
-### 4) GNOME Vitals panel setup (run as desktop user)
-
-```bash
-bash configs/gnome/vitals-setup.sh
-```
-
-### 5) Ensure OEM kernel + current firmware
-
-```bash
-sudo apt update
-sudo apt install linux-firmware linux-oem-24.04b linux-image-oem-24.04b
-```
-
-### 6) Reboot
+### 7) Reboot
 
 ```bash
 sudo reboot
 ```
 
----
+## WiFi verification
 
-## Optional: Force Revert to Stock OEM WiFi
+Run these checks after reboot:
 
-Use this if the machine previously had custom MT76 PM patches and you want a clean baseline:
+```bash
+dkms status | grep -Ei 'mt76|mt7925' || echo "No custom MT76/MT7925 DKMS modules"
+modinfo mt7925e | grep '^filename:'
+apt-cache policy linux-firmware linux-oem-24.04b
+IFACE=$(iw dev | awk '$1=="Interface"{print $2; exit}')
+iw dev "$IFACE" get power_save
+```
+
+Expected results:
+
+- No custom MT76/MT7925 DKMS module entries.
+- `mt7925e` from `/lib/modules/<kernel>/kernel/drivers/net/wireless/mediatek/mt76/mt7925/`.
+- `Power save: off`.
+
+## Reset to stock OEM WiFi baseline
+
+If your system previously used custom MT76 tweaks, run:
 
 ```bash
 sudo bash configs/mt76-pm-fix/revert-to-stock-oem.sh
 sudo reboot
 ```
 
----
-
 ## Diagnostics
 
 ```bash
-# Kernel currently running
 uname -r
-
-# NVIDIA status
 nvidia-smi
-
-# WiFi driver + firmware policy
 lspci -nnk | grep -A4 -Ei 'Network|Mediatek|MT7925'
 modinfo mt7925e | grep '^filename:'
 apt-cache policy linux-firmware linux-oem-24.04b
-
-# GNOME Vitals configuration
 dconf read /org/gnome/shell/extensions/vitals/hot-sensors
-
-# Battery power telemetry source
 upower -e | grep BAT
 ```
-
----
-
-## Notes
-
-- This README intentionally documents only the **current** maintained setup.
-- Historical experiments and deprecated WiFi workaround files were removed to avoid drift and confusion.
