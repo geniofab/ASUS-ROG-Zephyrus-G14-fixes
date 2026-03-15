@@ -1,0 +1,12 @@
+[Unit]
+Description=G14 power mode AC/DC monitor
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/g14-power-mode.sh watch
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
