@@ -19,6 +19,8 @@ Current, cleaned project state for Ubuntu 24.04 on ASUS ROG Zephyrus G14 2025 (G
   - Installs missing Cirrus CS35L56 firmware links for speaker amplifiers.
 - `configs/gnome/vitals-setup.sh`
   - Configures GNOME Vitals panel metrics (CPU/GPU/RAM/Battery power).
+- `configs/NetworkManager/wifi-powersave-off.conf`
+  - Disables WiFi powersave in NetworkManager for MT7925 stability.
 - `configs/mt76-pm-fix/revert-to-stock-oem.sh`
   - One-shot rollback/migration script to stock WiFi + OEM kernel/firmware.
 
@@ -27,18 +29,26 @@ Removed from this repo (deprecated custom MT7925 workarounds):
 - `configs/mt76-pm-fix/setup.sh`
 - `configs/mt76-pm-fix/mt7925-resume-fix.sh`
 - `configs/modprobe/mt7925-fix.conf`
-- `configs/NetworkManager/wifi-powersave-off.conf`
 
 ---
 
 ## WiFi (Current Policy)
 
-WiFi is intentionally aligned with stock Ubuntu packages:
+WiFi is intentionally aligned with stock Ubuntu packages, plus one minimal NetworkManager policy:
 
 - `mt7925e` from in-tree kernel module path (`/lib/modules/.../kernel/...`)
 - Official Ubuntu `linux-firmware`
 - No MT76 DKMS override
 - No custom ASPM/reload hooks
+- NetworkManager WiFi powersave disabled (`wifi.powersave = 2`)
+
+Apply the NetworkManager policy:
+
+```bash
+sudo install -D -m 644 configs/NetworkManager/wifi-powersave-off.conf \
+  /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+sudo systemctl restart NetworkManager
+```
 
 ### Verify WiFi is stock
 
