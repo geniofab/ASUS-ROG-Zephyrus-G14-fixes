@@ -5,6 +5,7 @@ SCRIPT_NAME="g14-power-mode"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/g14-power"
 LOG_FILE="$STATE_DIR/apply.log"
 REPORTED_MODE_FILE="$STATE_DIR/reported_mode"
+NOTIFY_STATE_FILE="$STATE_DIR/last_notify"
 
 mkdir -p "$STATE_DIR"
 
@@ -84,6 +85,43 @@ run_supergfx() {
     return 127
   fi
   timeout -k 1s 5s supergfxctl "$@" 2>/dev/null
+}
+
+get_pending_action() {
+  local action
+  action="$(run_supergfx -p | tr -d '[:space:]' || true)"
+  if [[ -z "$action" || "$(normalize "$action")" == "none" || "$(normalize "$action")" == "unknown" || "$(normalize "$action")" == "noactionrequired" ]]; then
+    echo "none"
+  else
+    echo "$action"
+  fi
+}
+
+get_pending_mode() {
+  local mode
+  mode="$(run_supergfx -P | tr -d '[:space:]' || true)"
+  if [[ -z "$mode" || "$(normalize "$mode")" == "unknown" ]]; then
+    echo "none"
+  else
+    echo "$mode"
+  fi
+}
+
+notify_pending_logout() {
+  local target="$1"
+  local action="$2"
+  local key
+  key="${target}:${action}"
+
+  if [[ -f "$NOTIFY_STATE_FILE" ]] && [[ "$(cat "$NOTIFY_STATE_FILE" 2>/dev/null || true)" == "$key" ]]; then
+    return
+  fi
+
+  printf '%s\n' "$key" > "$NOTIFY_STATE_FILE"
+
+  if has_cmd notify-send; then
+    notify-send "Power mode pending" "GPU switch to ${target} is pending (${action}). Log out to complete transition." || true
+  fi
 }
 
 supergfx_reported_mode() {
@@ -258,11 +296,14 @@ set_gpu_mode() {
   fi
 
   local current_pending_action current_pending_mode
-  current_pending_action="$(run_supergfx -p | tr -d '[:space:]' || true)"
-  current_pending_mode="$(run_supergfx -P | tr -d '[:space:]' || true)"
-  if [[ -n "$current_pending_action" && "$(normalize "$current_pending_action")" != "none" ]]; then
+  current_pending_action="$(get_pending_action)"
+  current_pending_mode="$(get_pending_mode)"
+  if [[ "$current_pending_action" != "none" ]]; then
     if [[ "$(normalize "$current_pending_mode")" == "$(normalize "$target")" ]]; then
       warn "GPU mode '$target' is already pending and requires session action: $current_pending_action"
+      if [[ "$logout_on_pending" != "yes" ]]; then
+        notify_pending_logout "$target" "$current_pending_action"
+      fi
       return
     fi
   fi
@@ -284,8 +325,8 @@ set_gpu_mode() {
   fi
 
   local pending_action
-  pending_action="$(run_supergfx -p | tr -d '[:space:]')"
-  if [[ -n "$pending_action" && "$(normalize "$pending_action")" != "none" ]]; then
+  pending_action="$(get_pending_action)"
+  if [[ "$pending_action" != "none" ]]; then
     warn "GPU mode switch pending action: $pending_action"
     if [[ "$logout_on_pending" == "yes" ]]; then
       if has_cmd gnome-session-quit; then
@@ -294,6 +335,8 @@ set_gpu_mode() {
       else
         warn "gnome-session-quit not found; please log out manually"
       fi
+    else
+      notify_pending_logout "$target" "$pending_action"
     fi
   fi
 
@@ -350,7 +393,7 @@ apply_profile_mapping() {
 }
 
 status() {
-  local source profile ppd gfx effective expected consistent nvidia_bdf
+  local source profile ppd gfx effective expected consistent nvidia_bdf pending_action pending_mode requires_logout
   source="$(get_power_source)"
   profile="$(asusctl profile get 2>/dev/null | awk -F': ' '/Active profile/{print $2; exit}' || true)"
   ppd="$(get_ppd)"
@@ -358,6 +401,13 @@ status() {
   expected="$(expected_gpu_class_from_policy "$ppd" "$source")"
   effective="$(effective_gpu_class)"
   nvidia_bdf="$(find_nvidia_gpu_bdf || true)"
+  pending_action="$(get_pending_action)"
+  pending_mode="$(get_pending_mode)"
+  if [[ "$pending_action" == "none" ]]; then
+    requires_logout="no"
+  else
+    requires_logout="yes"
+  fi
   if is_gpu_consistent_with_expected "$expected"; then
     consistent="yes"
   else
@@ -373,6 +423,9 @@ gpu_mode_effective=$effective
 gpu_mode_expected=$expected
 gpu_mode_consistent=$consistent
 nvidia_gpu_bdf=${nvidia_bdf:-none}
+pending_action=$pending_action
+pending_mode=$pending_mode
+requires_logout=$requires_logout
 EOF
 }
 
@@ -385,7 +438,7 @@ watch_loop() {
     now_ppd="$(get_ppd)"
     if [[ "$now_source" != "$last_source" || "$now_ppd" != "$last_ppd" ]]; then
       log "Change detected: source ${last_source:-unknown} -> $now_source, ppd ${last_ppd:-unknown} -> $now_ppd"
-      apply_profile_mapping "yes"
+      apply_profile_mapping "no"
       last_source="$now_source"
       last_ppd="$now_ppd"
     fi

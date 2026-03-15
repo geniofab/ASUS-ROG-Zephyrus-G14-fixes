@@ -4,7 +4,7 @@ After=graphical-session.target
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -lc 'powerprofilesctl set power-saver || true; %h/.local/bin/g14-power-mode.sh apply --logout-on-pending no || true'
+ExecStart=/bin/bash -lc 'for i in $(seq 1 30); do powerprofilesctl set power-saver && break; sleep 2; done; %h/.local/bin/g14-power-mode.sh apply --logout-on-pending no || true'
 
 [Install]
 WantedBy=default.target

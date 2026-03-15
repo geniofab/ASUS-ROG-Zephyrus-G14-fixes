@@ -96,10 +96,12 @@ Notes:
 
 - On AC, `Power Saver` and `Balanced` intentionally use the same quiet hybrid policy.
 - GPU mode changes may require a session reload/log out depending on current mode.
-- The background monitor will automatically trigger logout when required to complete a GPU mode transition.
+- The background monitor never forces logout; logout/reload is manual when required.
+- If a transition is pending, a GNOME desktop notification is shown.
 - This setup intentionally avoids MUX dGPU mode for profile switching, to keep mode changes reboot-free.
 - Startup default is `Power Saver`.
 - Startup default is enforced on each login by `g14-power-startup-eco.service`.
+- Startup service retries for up to ~60 seconds to handle early-session authorization timing.
 
 ## WiFi verification
 
@@ -132,6 +134,7 @@ Expected results:
 - `Power save: off`.
 - `supergfxd` active if you want automatic GPU mode switching.
 - `gpu_mode_consistent=yes` in `g14-power-mode.sh status` for the selected profile.
+- `requires_logout=yes` means profile settings are applied but GPU transition needs logout to complete.
 
 If reported and effective GPU mode differ (for example, reported dGPU while hardware is not present), `g14-power-mode.sh check` prints `mismatch: ...` and exits with code `2`.
 
